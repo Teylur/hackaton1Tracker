@@ -1,0 +1,45 @@
+# === Сборка ===
+build/
+
+# === Артефакты запуска ===
+output/**/*
+!output/**/.gitkeep
+
+# === ML-модели (большие файлы) ===
+models/**
+!models/.gitkeep
+!models/README.md
+
+# === Данные: изображения, видео, телеметрия ===
+data/**/*
+!data/**/.gitkeep
+!data/**/README.md
+
+# === Сторонние библиотеки: бинарники ===
+third_party/**/lib/**/*
+!third_party/**/lib/.gitkeep
+
+# === Крупные файлы (общий фильтр) ===
+*.onnx
+*.pt
+*.pth
+*.weights
+*.engine
+*.so
+*.so.*
+*.dll
+*.dylib
+*.mp4
+*.avi
+*.mkv
+*.mov
+*.wmv
+*.zip
+*.tar.gz
+*.7z
+
+# === IDE ===
+.vs/
+*.user
+*.suo
+.vscode/ipch/
