@@ -94,3 +94,9 @@ kazaki-car_racing/
 - интеграция **телеметрии**;
 - **UI** для просмотра эпизодов судьёй;
 - конфиги под разные трассы (Moscow Raceway, КазаньРинг и др.).
+
+UI:
+libs - https://vk.com/away.php?to=https%3A%2F%2Fgithub.com%2Focornut%2Fimgui%2Farchive%2Frefs%2Fheads%2Fmaster.zip&utf=1
+glfw - 
+sudo apt update
+sudo apt install libglfw3-dev libglew-dev

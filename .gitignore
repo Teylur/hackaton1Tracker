@@ -18,6 +18,7 @@ data/**/*
 # === Сторонние библиотеки: бинарники ===
 third_party/**/lib/**/*
 !third_party/**/lib/.gitkeep
+third_party/imgui
 
 # === Крупные файлы (общий фильтр) ===
 *.onnx
