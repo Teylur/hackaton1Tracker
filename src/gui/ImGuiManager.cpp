@@ -38,7 +38,8 @@ bool ImGuiManager::initGLFW() {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-    m_window = glfwCreateWindow(1600, 900, "Ассистент судьи — Автогонки", nullptr, nullptr);
+    // Добавлен префикс u8 для корректной кодировки заголовка окна
+    m_window = glfwCreateWindow(1600, 900, u8"Ассистент судьи — Автогонки", nullptr, nullptr);
     if (!m_window) {
         std::cerr << "Failed to create GLFW window\n";
         glfwTerminate();
@@ -53,6 +54,34 @@ bool ImGuiManager::initGLFW() {
 bool ImGuiManager::initImGui() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    
+    // --- НАЧАЛО ИЗМЕНЕНИЙ ДЛЯ КИРИЛЛИЦЫ ---
+    ImGuiIO& io = ImGui::GetIO();
+    io.Fonts->Clear(); // Очищаем шрифт по умолчанию (ProggyClean)
+
+    ImFontConfig font_config;
+    font_config.OversampleH = 2;
+    font_config.OversampleV = 2;
+    font_config.PixelSnapH = true;
+
+    // Путь относительно папки build/, откуда обычно запускается программа
+    const char* font_path = "third_party/imgui/misc/fonts/Roboto-Medium.ttf";
+    
+    ImFont* font = io.Fonts->AddFontFromFileTTF(
+        font_path, 
+        18.0f, 
+        &font_config, 
+        io.Fonts->GetGlyphRangesCyrillic() // <-- Загружаем русские символы
+    );
+
+    if (!font) {
+        std::cerr << "WARNING: Не удалось загрузить шрифт по пути: " << font_path << "\n";
+        std::cerr << "Убедитесь, что вы запускаете программу из папки build/\n";
+        // Фоллбек, чтобы программа не упала, но кириллица будет ???
+        io.Fonts->AddFontDefault();
+    }
+    // --- КОНЕЦ ИЗМЕНЕНИЙ ДЛЯ КИРИЛЛИЦЫ ---
+
     ImGui::StyleColorsDark();
 
     ImGui_ImplGlfw_InitForOpenGL(m_window, true);
@@ -66,8 +95,8 @@ void ImGuiManager::run() {
     m_initialized = true;
 
     if (!m_player.LoadVideo(m_videoPath)) {
-        std::cerr << "Не удалось открыть видео: " << m_videoPath << std::endl;
-        std::cerr << "Положите файл в data/videos/ или передайте путь аргументом.\n";
+        std::cerr << u8"Не удалось открыть видео: " << m_videoPath << std::endl;
+        std::cerr << u8"Положите файл в data/videos/ или передайте путь аргументом.\n";
     } else {
         m_totalFrames = m_player.GetTotalFrames();
         m_fps = m_player.GetFps();
@@ -192,13 +221,13 @@ void ImGuiManager::checkOffTrackAlerts(const std::vector<Detection>& detections,
 void ImGuiManager::renderSidebar() {
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(280, 320), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Управление", nullptr, ImGuiWindowFlags_NoCollapse);
+    ImGui::Begin(u8"Управление", nullptr, ImGuiWindowFlags_NoCollapse);
 
-    if (ImGui::Button("Play")) m_player.Play();
+    if (ImGui::Button(u8"Play")) m_player.Play();
     ImGui::SameLine();
-    if (ImGui::Button("Pause")) m_player.Pause();
+    if (ImGui::Button(u8"Pause")) m_player.Pause();
     ImGui::SameLine();
-    if (ImGui::Button("Stop")) {
+    if (ImGui::Button(u8"Stop")) {
         m_player.Stop();
         m_currentFrameIndex = 0;
         m_trajectory.clear();
@@ -206,7 +235,7 @@ void ImGuiManager::renderSidebar() {
 
     ImGui::Separator();
 
-    if (ImGui::Button("Open test video") && fs::exists("data/videos/test.mp4")) {
+    if (ImGui::Button(u8"Open test video") && fs::exists("data/videos/test.mp4")) {
         m_videoPath = "data/videos/test.mp4";
         if (m_player.LoadVideo(m_videoPath)) {
             m_totalFrames = m_player.GetTotalFrames();
@@ -218,12 +247,12 @@ void ImGuiManager::renderSidebar() {
     }
 
     ImGui::Separator();
-    ImGui::Checkbox("Показывать Bounding Box", &m_showBoxes);
-    ImGui::Checkbox("Показывать траекторию", &m_showTrajectory);
-    ImGui::Checkbox("Детектировать выезды", &m_showAlertsOverlay);
+    ImGui::Checkbox(u8"Показывать Bounding Box", &m_showBoxes);
+    ImGui::Checkbox(u8"Показывать траекторию", &m_showTrajectory);
+    ImGui::Checkbox(u8"Детектировать выезды", &m_showAlertsOverlay);
 
-    ImGui::Text("Видео: %s", m_videoPath.c_str());
-    ImGui::Text("Кадр: %d / %d", m_currentFrameIndex, m_totalFrames);
+    ImGui::Text(u8"Видео: %s", m_videoPath.c_str());
+    ImGui::Text(u8"Кадр: %d / %d", m_currentFrameIndex, m_totalFrames);
 
     ImGui::End();
 }
@@ -231,14 +260,14 @@ void ImGuiManager::renderSidebar() {
 void ImGuiManager::renderViewport() {
     ImGui::SetNextWindowPos(ImVec2(300, 10), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(1100, 700), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Видеоплеер", nullptr, ImGuiWindowFlags_NoCollapse);
+    ImGui::Begin(u8"Видеоплеер", nullptr, ImGuiWindowFlags_NoCollapse);
 
     if (m_player.GetWidth() > 0) {
         m_player.Render();
     } else {
-        ImGui::Text("Видео не загружено");
-        ImGui::TextWrapped("Положите файл в data/videos/test.mp4 или запустите:");
-        ImGui::TextWrapped("./build/racing_gui path/to/video.mp4");
+        ImGui::Text(u8"Видео не загружено");
+        ImGui::TextWrapped(u8"Положите файл в data/videos/test.mp4 или запустите:");
+        ImGui::TextWrapped(u8"./build/racing_gui path/to/video.mp4");
     }
 
     ImGui::End();
@@ -247,12 +276,12 @@ void ImGuiManager::renderViewport() {
 void ImGuiManager::renderTimeline() {
     ImGui::SetNextWindowPos(ImVec2(10, 720), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(1580, 80), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Таймлайн", nullptr, ImGuiWindowFlags_NoCollapse);
+    ImGui::Begin(u8"Таймлайн", nullptr, ImGuiWindowFlags_NoCollapse);
 
     int maxFrame = m_totalFrames > 0 ? m_totalFrames - 1 : 0;
     int frame = m_currentFrameIndex;
 
-    if (ImGui::SliderInt("Кадр", &frame, 0, maxFrame)) {
+    if (ImGui::SliderInt(u8"Кадр", &frame, 0, maxFrame)) {
         m_player.SeekFrame(frame);
         m_currentFrameIndex = frame;
         m_player.Pause();
