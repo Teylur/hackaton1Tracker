@@ -26,7 +26,7 @@
 ### Ubuntu
 
 ```bash
-sudo apt install build-essential cmake pkg-config libopencv-dev
+sudo apt install build-essential cmake pkg-config libopencv-dev libglfw3-dev
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
@@ -52,6 +52,15 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE=C:/path/to/vcpkg/scripts/buildsystems/vcpk
 
 ```bash
 ./build/yolo_image_test
+```
+
+### GUI (ассистент судьи)
+
+```bash
+sudo apt install libglfw3-dev
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+./build/racing_gui data/videos/test.mp4 models/best.onnx
 ```
 
 Аргументы (все опциональны):

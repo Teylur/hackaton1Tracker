@@ -1,7 +1,8 @@
 #include "VideoPlayer.h"
-#include <imgui.h>
-#include <GLFW/glfw3.h>
+#include "imgui.h"
+#include "imgui_impl_opengl3.h"
 #include <opencv2/imgproc.hpp>
+#include <algorithm>
 
 VideoPlayer::VideoPlayer() {}
 VideoPlayer::~VideoPlayer() { Close(); }
@@ -10,7 +11,11 @@ bool VideoPlayer::LoadVideo(const std::string& path) {
     Close();
     if (!cap.open(path)) return false;
     videoLoaded = true;
-    // Захватываем первый кадр
+    totalFrames = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT));
+    fps = cap.get(cv::CAP_PROP_FPS);
+    if (fps <= 0) fps = 30.0;
+    currentFrameIndex = 0;
+
     cap >> currentFrame;
     if (currentFrame.empty()) {
         videoLoaded = false;
@@ -38,6 +43,7 @@ void VideoPlayer::Stop() {
     playing = false;
     if (videoLoaded) {
         cap.set(cv::CAP_PROP_POS_FRAMES, 0);
+        currentFrameIndex = 0;
         cap >> currentFrame;
         if (!currentFrame.empty()) {
             cv::cvtColor(currentFrame, rgbFrame, cv::COLOR_BGR2RGB);
@@ -50,10 +56,16 @@ void VideoPlayer::Stop() {
 bool VideoPlayer::IsPlaying() const { return playing; }
 
 void VideoPlayer::Seek(float position) {
+    if (!videoLoaded || totalFrames <= 0) return;
+    int targetFrame = static_cast<int>(totalFrames * position);
+    SeekFrame(targetFrame);
+}
+
+void VideoPlayer::SeekFrame(int frame) {
     if (!videoLoaded) return;
-    double totalFrames = cap.get(cv::CAP_PROP_FRAME_COUNT);
-    double targetFrame = totalFrames * position;
-    cap.set(cv::CAP_PROP_POS_FRAMES, targetFrame);
+    frame = std::max(0, std::min(frame, totalFrames - 1));
+    cap.set(cv::CAP_PROP_POS_FRAMES, frame);
+    currentFrameIndex = frame;
     cap >> currentFrame;
     if (!currentFrame.empty()) {
         cv::cvtColor(currentFrame, rgbFrame, cv::COLOR_BGR2RGB);
@@ -70,9 +82,11 @@ bool VideoPlayer::Update() {
     if (!videoLoaded || !playing) return false;
     cap >> currentFrame;
     if (currentFrame.empty()) {
-        playing = false;   // конец видео
+        playing = false;
         return false;
     }
+    currentFrameIndex = static_cast<int>(cap.get(cv::CAP_PROP_POS_FRAMES)) - 1;
+    if (currentFrameIndex < 0) currentFrameIndex = 0;
     cv::cvtColor(currentFrame, rgbFrame, cv::COLOR_BGR2RGB);
     CreateTexture();
     frameTime = cap.get(cv::CAP_PROP_POS_MSEC) / 1000.0;
@@ -128,6 +142,9 @@ void VideoPlayer::Render() {
 
 int VideoPlayer::GetWidth() const { return videoLoaded ? currentFrame.cols : 0; }
 int VideoPlayer::GetHeight() const { return videoLoaded ? currentFrame.rows : 0; }
+int VideoPlayer::GetTotalFrames() const { return totalFrames; }
+int VideoPlayer::GetCurrentFrameIndex() const { return currentFrameIndex; }
+double VideoPlayer::GetFps() const { return fps; }
 
 void VideoPlayer::CreateTexture() {
     if (rgbFrame.empty()) return;

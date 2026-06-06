@@ -2,6 +2,7 @@
 #include <opencv2/opencv.hpp>
 #include <vector>
 #include <string>
+#include <functional>
 
 struct Alert {
     int id;
@@ -32,12 +33,15 @@ public:
 
     void saveAcceptedAlerts(const std::string& baseFolder = "data/labeled/");
 
+    void setOnAlertAccepted(std::function<void(int frameNumber)> callback);
+
     int getSelectedAlertIndex() const { return selectedAlertIndex; }
 
 private:
     std::vector<Alert> alerts;
     int nextId = 1;
     int selectedAlertIndex = -1;
+    std::function<void(int frameNumber)> onAlertAccepted;
 
     void saveAlertSnippet(const Alert& alert, const cv::Mat& frame, 
                          const std::string& baseFolder);

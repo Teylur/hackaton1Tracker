@@ -1,16 +1,29 @@
 #include "ImGuiManager.h"
+
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
+
 #include <GLFW/glfw3.h>
+
+#include <opencv2/videoio.hpp>
 #include <iostream>
 #include <filesystem>
 
-// Конструктор / Деструктор
-ImGuiManager::ImGuiManager() = default;
-ImGuiManager::~ImGuiManager() { shutdown(); }
+namespace fs = std::filesystem;
 
-// ==================== ИНИЦИАЛИЗАЦИЯ ====================
+ImGuiManager::ImGuiManager(const std::string& video_path, const fs::path& model_path)
+    : m_detector(model_path), m_videoPath(video_path) {
+    m_alertSystem.setOnAlertAccepted([this](int frameNumber) {
+        m_player.SeekFrame(frameNumber);
+        m_currentFrameIndex = frameNumber;
+        m_player.Pause();
+    });
+}
+
+ImGuiManager::~ImGuiManager() {
+    shutdown();
+}
 
 bool ImGuiManager::initGLFW() {
     if (!glfwInit()) {
@@ -19,13 +32,16 @@ bool ImGuiManager::initGLFW() {
     }
 
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+#ifdef __APPLE__
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+#endif
 
-    m_window = glfwCreateWindow(1280, 720, "Ассистент судьи - Автогонки", nullptr, nullptr);
+    m_window = glfwCreateWindow(1600, 900, "Ассистент судьи — Автогонки", nullptr, nullptr);
     if (!m_window) {
-        std::cerr << "Failed to create window\n";
+        std::cerr << "Failed to create GLFW window\n";
+        glfwTerminate();
         return false;
     }
 
@@ -39,10 +55,8 @@ bool ImGuiManager::initImGui() {
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
 
-    ImGui_ImplGlfw_InitForOpenGL((GLFWwindow*)m_window, true);
-    ImGui_ImplOpenGL3_Init("#version 150");
-
-    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    ImGui_ImplGlfw_InitForOpenGL(m_window, true);
+    ImGui_ImplOpenGL3_Init("#version 330");
     return true;
 }
 
@@ -51,235 +65,199 @@ void ImGuiManager::run() {
     if (!initImGui()) return;
     m_initialized = true;
 
-    while (!glfwWindowShouldClose((GLFWwindow*)m_window)) {
+    if (!m_player.LoadVideo(m_videoPath)) {
+        std::cerr << "Не удалось открыть видео: " << m_videoPath << std::endl;
+        std::cerr << "Положите файл в data/videos/ или передайте путь аргументом.\n";
+    } else {
+        m_totalFrames = m_player.GetTotalFrames();
+        m_fps = m_player.GetFps();
+        m_player.Play();
+    }
+
+    while (!glfwWindowShouldClose(m_window)) {
         glfwPollEvents();
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        renderDockSpace();
+        if (m_player.IsPlaying()) {
+            if (m_player.Update()) {
+                processFrame();
+                m_currentFrameIndex = m_player.GetCurrentFrameIndex();
+            }
+        }
+
         renderSidebar();
         renderViewport();
-        renderAlertsPanel();
+        ImGui::SetNextWindowPos(ImVec2(10, 340), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(280, 360), ImGuiCond_FirstUseEver);
+        m_alertSystem.drawAlertPanel();
         renderTimeline();
 
         ImGui::Render();
 
         int w, h;
-        glfwGetFramebufferSize((GLFWwindow*)m_window, &w, &h);
+        glfwGetFramebufferSize(m_window, &w, &h);
         glViewport(0, 0, w, h);
+        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-
-        glfwSwapBuffers((GLFWwindow*)m_window);
+        glfwSwapBuffers(m_window);
     }
 
     shutdown();
 }
 
 void ImGuiManager::shutdown() {
-    if (m_videoTexture) {
-        glDeleteTextures(1, &m_videoTexture);
-        m_videoTexture = 0;
-    }
+    if (!m_initialized) return;
+
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
+
     if (m_window) {
-        ImGui_ImplOpenGL3_Shutdown();
-        ImGui_ImplGlfw_Shutdown();
-        ImGui::DestroyContext();
-        glfwDestroyWindow((GLFWwindow*)m_window);
-        glfwTerminate();
+        glfwDestroyWindow(m_window);
         m_window = nullptr;
     }
+    glfwTerminate();
+    m_initialized = false;
 }
 
-// ==================== ОБНОВЛЕНИЕ ТЕКСТУРЫ ====================
+void ImGuiManager::processFrame() {
+    cv::Mat frame = m_player.GetCurrentFrame();
+    if (frame.empty()) return;
 
-void ImGuiManager::updateTexture() {
-    if (m_currentFrame.empty()) return;
+    auto detections = m_detector.detect(frame);
+    updateOverlays(detections);
+    checkOffTrackAlerts(detections, frame);
+}
 
-    cv::Mat rgb;
-    cv::cvtColor(m_currentFrame, rgb, cv::COLOR_BGR_RGB);
-
-    if (m_videoTexture == 0) {
-        glGenTextures(1, &m_videoTexture);
-        glBindTexture(GL_TEXTURE_2D, m_videoTexture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+void ImGuiManager::updateOverlays(const std::vector<Detection>& detections) {
+    if (!m_showBoxes) {
+        m_player.ClearOverlays();
+        return;
     }
 
-    glBindTexture(GL_TEXTURE_2D, m_videoTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rgb.cols, rgb.rows, 0, GL_RGB, GL_UNSIGNED_BYTE, rgb.data);
-    m_textureWidth = rgb.cols;
-    m_textureHeight = rgb.rows;
+    std::vector<cv::Rect> boxes;
+    std::vector<std::pair<cv::Point, std::string>> texts;
+
+    m_hasTrackBBox = false;
+    cv::Point2f carCenter;
+
+    for (const auto& det : detections) {
+        boxes.push_back(det.bbox);
+        texts.push_back({cv::Point(det.bbox.x, det.bbox.y - 5),
+                         det.getClassName() + " " + std::to_string(static_cast<int>(det.confidence * 100)) + "%"});
+
+        if (det.class_id == 0) {
+            m_trackBBox = det.bbox;
+            m_hasTrackBBox = true;
+        }
+        if (det.class_id == 2) {
+            carCenter = det.center;
+        }
+    }
+
+    if (m_showTrajectory && carCenter.x > 0 && carCenter.y > 0) {
+        m_trajectory.push_back(carCenter);
+        if (m_trajectory.size() > 500) {
+            m_trajectory.erase(m_trajectory.begin());
+        }
+        m_player.SetTrajectory(m_trajectory);
+    }
+
+    m_player.SetOverlayBoxes(boxes);
+    m_player.SetOverlayTexts(texts);
 }
 
-// ==================== РЕНДЕР ПАНЕЛЕЙ ====================
+void ImGuiManager::checkOffTrackAlerts(const std::vector<Detection>& detections,
+                                       const cv::Mat& frame) {
+    if (!m_showAlertsOverlay || !m_hasTrackBBox) return;
 
-void ImGuiManager::renderDockSpace() {
-    ImGui::DockSpaceOverViewport();
+    for (const auto& det : detections) {
+        if (det.class_id != 1) continue;
+
+        cv::Point2f wheelCenter = det.center;
+        bool insideTrack = m_trackBBox.contains(cv::Point(static_cast<int>(wheelCenter.x),
+                                                          static_cast<int>(wheelCenter.y)));
+        if (!insideTrack) {
+            double timestamp = m_currentFrameIndex / (m_fps > 0 ? m_fps : 30.0);
+            m_alertSystem.addAlert(frame, det.confidence, m_currentFrameIndex, timestamp, det.bbox);
+            break;
+        }
+    }
 }
 
 void ImGuiManager::renderSidebar() {
+    ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(280, 320), ImGuiCond_FirstUseEver);
     ImGui::Begin("Управление", nullptr, ImGuiWindowFlags_NoCollapse);
 
-    // Кнопки управления
-    if (ImGui::Button("▶ Play")) play();
+    if (ImGui::Button("Play")) m_player.Play();
     ImGui::SameLine();
-    if (ImGui::Button("⏸ Pause")) pause();
+    if (ImGui::Button("Pause")) m_player.Pause();
     ImGui::SameLine();
-    if (ImGui::Button("⏹ Stop")) stop();
-    ImGui::SameLine();
-    if (ImGui::Button("📂 Open Video")) {
-        // Простой вариант: открыть тестовое видео из папки
-        if (std::filesystem::exists("test_video.mp4")) {
-            openVideo("test_video.mp4");
-        }
+    if (ImGui::Button("Stop")) {
+        m_player.Stop();
+        m_currentFrameIndex = 0;
+        m_trajectory.clear();
     }
 
     ImGui::Separator();
 
-    ImGui::Checkbox("Показывать Bounding Box", &showBBoxes);
-    ImGui::Checkbox("Показыватьтраекторию", &showTrajectory);
-    ImGui::Checkbox("Показывать алерты на видео", &showAlertsOverlay);
+    if (ImGui::Button("Open test video") && fs::exists("data/videos/test.mp4")) {
+        m_videoPath = "data/videos/test.mp4";
+        if (m_player.LoadVideo(m_videoPath)) {
+            m_totalFrames = m_player.GetTotalFrames();
+            m_fps = m_player.GetFps();
+            m_currentFrameIndex = 0;
+            m_trajectory.clear();
+            m_player.Play();
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::Checkbox("Показывать Bounding Box", &m_showBoxes);
+    ImGui::Checkbox("Показывать траекторию", &m_showTrajectory);
+    ImGui::Checkbox("Детектировать выезды", &m_showAlertsOverlay);
+
+    ImGui::Text("Видео: %s", m_videoPath.c_str());
+    ImGui::Text("Кадр: %d / %d", m_currentFrameIndex, m_totalFrames);
 
     ImGui::End();
 }
 
 void ImGuiManager::renderViewport() {
+    ImGui::SetNextWindowPos(ImVec2(300, 10), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(1100, 700), ImGuiCond_FirstUseEver);
     ImGui::Begin("Видеоплеер", nullptr, ImGuiWindowFlags_NoCollapse);
 
-    if (m_videoTexture && !m_currentFrame.empty()) {
-        ImVec2 viewportSize = ImGui::GetContentRegionAvail();
-        ImGui::Image((void*)(intptr_t)m_videoTexture, viewportSize);
-
-        // Рисуем Bounding Box поверх видео
-        if (showBBoxes && m_currentBBox.width > 0 && m_currentBBox.height > 0) {
-            ImDrawList* drawList = ImGui::GetWindowDrawList();
-            ImVec2 imagePos = ImGui::GetCursorScreenPos();
-            float scaleX = viewportSize.x / m_textureWidth;
-            float scaleY = viewportSize.y / m_textureHeight;
-
-            ImVec2 p1(imagePos.x + m_currentBBox.x * scaleX, 
-                       imagePos.y + m_currentBBox.y * scaleY);
-            ImVec2 p2(p1.x + m_currentBBox.width * scaleX, 
-                      p1.y + m_currentBBox.height * scaleY);
-            drawList->AddRect(p1, p2, IM_COL32(0, 255, 0, 255), 2.0f);
-        }
-
-        // Рисуем траекторию
-        if (showTrajectory && m_trajectory.size() > 1) {
-            ImDrawList* drawList = ImGui::GetWindowDrawList();
-            ImVec2 imagePos = ImGui::GetCursorScreenPos();
-            float scaleX = viewportSize.x / m_textureWidth;
-            float scaleY = viewportSize.y / m_textureHeight;
-
-            for (size_t i = 1; i < m_trajectory.size(); i++) {
-                ImVec2 from(imagePos.x + m_trajectory[i-1].x * scaleX,
-                            imagePos.y + m_trajectory[i-1].y * scaleY);
-                ImVec2 to(imagePos.x + m_trajectory[i].x * scaleX,
-                          imagePos.y + m_trajectory[i].y * scaleY);
-                drawList->AddLine(from, to, IM_COL32(255, 255, 0, 255), 2.0f);
-            }
-        }
+    if (m_player.GetWidth() > 0) {
+        m_player.Render();
     } else {
         ImGui::Text("Видео не загружено");
-    }
-
-    ImGui::End();
-}
-
-void ImGuiManager::renderAlertsPanel() {
-    ImGui::Begin("Алерты", nullptr, ImGuiWindowFlags_NoCollapse);
-
-    if (m_alerts.empty()) {
-        ImGui::Text("Нет алертов");
-    } else {
-        for (auto& alert : m_alerts) {
-            if (alert.accepted || alert.rejected) continue;
-
-            ImGui::Text("⚠ Alert #%d - %.2f сек - %.0f%%", 
-                        alert.id, alert.timestamp, alert.confidence * 100);
-            ImGui::SameLine();
-            if (ImGui::SmallButton(("Принять##" + std::to_string(alert.id)).c_str())) {
-                alert.accepted = true;
-                jumpToFrame(alert.start_frame);
-            }
-            ImGui::SameLine();
-            if (ImGui::SmallButton(("Отклонить##" + std::to_string(alert.id)).c_str())) {
-                alert.rejected = true;
-            }
-            ImGui::Separator();
-        }
+        ImGui::TextWrapped("Положите файл в data/videos/test.mp4 или запустите:");
+        ImGui::TextWrapped("./build/racing_gui path/to/video.mp4");
     }
 
     ImGui::End();
 }
 
 void ImGuiManager::renderTimeline() {
+    ImGui::SetNextWindowPos(ImVec2(10, 720), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(1580, 80), ImGuiCond_FirstUseEver);
     ImGui::Begin("Таймлайн", nullptr, ImGuiWindowFlags_NoCollapse);
 
-    int frame = m_currentFrame;
-    if (ImGui::SliderInt("Кадр", &frame, 0, m_totalFrames > 0 ? m_totalFrames : 1000)) {
-        onSeek(frame);
+    int maxFrame = m_totalFrames > 0 ? m_totalFrames - 1 : 0;
+    int frame = m_currentFrameIndex;
+
+    if (ImGui::SliderInt("Кадр", &frame, 0, maxFrame)) {
+        m_player.SeekFrame(frame);
+        m_currentFrameIndex = frame;
+        m_player.Pause();
+        processFrame();
     }
 
     ImGui::End();
-}
-
-// ==================== ПУБЛИЧНЫЕ МЕТОДЫ ====================
-
-void ImGuiManager::setCurrentFrame(const cv::Mat& frame) {
-    frame.copyTo(m_currentFrame);
-    updateTexture();
-}
-
-void ImGuiManager::setCarBBox(const cv::Rect& bbox) {
-    m_currentBBox = bbox;
-}
-
-void ImGuiManager::setCarPosition(const cv::Point2f& pos) {
-    m_currentPosition = pos;
-}
-
-void ImGuiManager::setTrajectory(const std::vector<cv::Point2f>& trajectory) {
-    m_trajectory = trajectory;
-}
-
-void ImGuiManager::setAlerts(const std::vector<Alert>& alerts) {
-    m_alerts = alerts;
-}
-
-void ImGuiManager::play() {
-    m_playing = true;
-}
-
-void ImGuiManager::pause() {
-    m_playing = false;
-}
-
-void ImGuiManager::stop() {
-    m_playing = false;
-    m_currentFrame = 0;
-}
-
-void ImGuiManager::jumpToFrame(int frameId) {
-    m_currentFrame = frameId;
-    //Здесь будет вызов к бэкенду для загрузки кадра
-}
-
-void ImGuiManager::openVideo(const std::string& path) {
-    m_currentVideoPath = path;
-    cv::VideoCapture cap(path);
-    if (cap.isOpened()) {
-        m_totalFrames = (int)cap.get(cv::CAP_PROP_FRAME_COUNT);
-        m_fps = cap.get(cv::CAP_PROP_FPS);
-        cap.release();
-    }
-    m_currentFrame = 0;
-}
-
-void ImGuiManager::onSeek(int frame) {
-    m_currentFrame = frame;
-    m_playing = false;
 }

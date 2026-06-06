@@ -78,6 +78,10 @@ void AlertSystem::drawAlertPanel() {
     ImGui::End();
 }
 
+void AlertSystem::setOnAlertAccepted(std::function<void(int frameNumber)> callback) {
+    onAlertAccepted = std::move(callback);
+}
+
 void AlertSystem::processAcceptReject(int alertIndex, bool isAccepted) {
     if (alertIndex < 0 || alertIndex >= (int)alerts.size()) return;
     
@@ -86,6 +90,10 @@ void AlertSystem::processAcceptReject(int alertIndex, bool isAccepted) {
     
     std::cout << (isAccepted ? "✅ Принят" : "❌ Отклонён") 
               << " алерт #" << alert.id << std::endl;
+
+    if (isAccepted && onAlertAccepted) {
+        onAlertAccepted(alert.frameNumber);
+    }
 }
 
 std::vector<Alert> AlertSystem::getAllAlerts() const {
