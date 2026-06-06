@@ -3,9 +3,14 @@
 #include "imgui_impl_opengl3.h"
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
+#include <iostream>
 
 VideoPlayer::VideoPlayer() {}
 VideoPlayer::~VideoPlayer() { Close(); }
+
+void VideoPlayer::ResetFrameTimer() {
+    hasFrameClock = false;
+}
 
 bool VideoPlayer::LoadVideo(const std::string& path) {
     Close();
@@ -22,8 +27,9 @@ bool VideoPlayer::LoadVideo(const std::string& path) {
         return false;
     }
     cv::cvtColor(currentFrame, rgbFrame, cv::COLOR_BGR2RGB);
-    CreateTexture();
+    UploadFrameToTexture();
     frameTime = cap.get(cv::CAP_PROP_POS_MSEC) / 1000.0;
+    ResetFrameTimer();
     return true;
 }
 
@@ -35,10 +41,18 @@ void VideoPlayer::Close() {
     currentFrame.release();
     rgbFrame.release();
     ClearOverlays();
+    ResetFrameTimer();
 }
 
-void VideoPlayer::Play() { if (videoLoaded) playing = true; }
+void VideoPlayer::Play() {
+    if (videoLoaded) {
+        playing = true;
+        ResetFrameTimer();
+    }
+}
+
 void VideoPlayer::Pause() { playing = false; }
+
 void VideoPlayer::Stop() {
     playing = false;
     if (videoLoaded) {
@@ -47,10 +61,11 @@ void VideoPlayer::Stop() {
         cap >> currentFrame;
         if (!currentFrame.empty()) {
             cv::cvtColor(currentFrame, rgbFrame, cv::COLOR_BGR2RGB);
-            CreateTexture();
+            UploadFrameToTexture();
             frameTime = 0.0;
         }
     }
+    ResetFrameTimer();
 }
 
 bool VideoPlayer::IsPlaying() const { return playing; }
@@ -69,9 +84,10 @@ void VideoPlayer::SeekFrame(int frame) {
     cap >> currentFrame;
     if (!currentFrame.empty()) {
         cv::cvtColor(currentFrame, rgbFrame, cv::COLOR_BGR2RGB);
-        CreateTexture();
+        UploadFrameToTexture();
         frameTime = cap.get(cv::CAP_PROP_POS_MSEC) / 1000.0;
     }
+    ResetFrameTimer();
 }
 
 const cv::Mat& VideoPlayer::GetCurrentFrame() const {
@@ -80,6 +96,16 @@ const cv::Mat& VideoPlayer::GetCurrentFrame() const {
 
 bool VideoPlayer::Update() {
     if (!videoLoaded || !playing) return false;
+
+    auto now = std::chrono::steady_clock::now();
+    const double interval = 1.0 / fps;
+    if (hasFrameClock) {
+        double elapsed = std::chrono::duration<double>(now - lastFrameClock).count();
+        if (elapsed < interval) return true;
+    }
+    lastFrameClock = now;
+    hasFrameClock = true;
+
     cap >> currentFrame;
     if (currentFrame.empty()) {
         playing = false;
@@ -88,7 +114,7 @@ bool VideoPlayer::Update() {
     currentFrameIndex = static_cast<int>(cap.get(cv::CAP_PROP_POS_FRAMES)) - 1;
     if (currentFrameIndex < 0) currentFrameIndex = 0;
     cv::cvtColor(currentFrame, rgbFrame, cv::COLOR_BGR2RGB);
-    CreateTexture();
+    UploadFrameToTexture();
     frameTime = cap.get(cv::CAP_PROP_POS_MSEC) / 1000.0;
     return true;
 }
@@ -97,8 +123,8 @@ void VideoPlayer::Render() {
     if (!videoLoaded || currentFrame.empty()) return;
 
     ImVec2 avail = ImGui::GetContentRegionAvail();
-    float vidW = (float)currentFrame.cols;
-    float vidH = (float)currentFrame.rows;
+    float vidW = static_cast<float>(currentFrame.cols);
+    float vidH = static_cast<float>(currentFrame.rows);
     float scaleW = avail.x / vidW;
     float scaleH = avail.y / vidH;
     float scale = (scaleW < scaleH) ? scaleW : scaleH;
@@ -106,7 +132,6 @@ void VideoPlayer::Render() {
 
     ImGui::Image((void*)(intptr_t)textureID, imageSize);
 
-    // Оверлеи
     ImVec2 imagePos = ImGui::GetItemRectMin();
     float sx = scale;
     float sy = scale;
@@ -146,15 +171,32 @@ int VideoPlayer::GetTotalFrames() const { return totalFrames; }
 int VideoPlayer::GetCurrentFrameIndex() const { return currentFrameIndex; }
 double VideoPlayer::GetFps() const { return fps; }
 
-void VideoPlayer::CreateTexture() {
+void VideoPlayer::UploadFrameToTexture() {
     if (rgbFrame.empty()) return;
-    if (textureID == 0) glGenTextures(1, &textureID);
+
+    if (textureID == 0) {
+        glGenTextures(1, &textureID);
+        glBindTexture(GL_TEXTURE_2D, textureID);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rgbFrame.cols, rgbFrame.rows,
+                     0, GL_RGB, GL_UNSIGNED_BYTE, rgbFrame.data);
+        texWidth = rgbFrame.cols;
+        texHeight = rgbFrame.rows;
+        return;
+    }
+
     glBindTexture(GL_TEXTURE_2D, textureID);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rgbFrame.cols, rgbFrame.rows,
-                 0, GL_RGB, GL_UNSIGNED_BYTE, rgbFrame.data);
+    if (rgbFrame.cols != texWidth || rgbFrame.rows != texHeight) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rgbFrame.cols, rgbFrame.rows,
+                     0, GL_RGB, GL_UNSIGNED_BYTE, rgbFrame.data);
+        texWidth = rgbFrame.cols;
+        texHeight = rgbFrame.rows;
+    } else {
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, rgbFrame.cols, rgbFrame.rows,
+                        GL_RGB, GL_UNSIGNED_BYTE, rgbFrame.data);
+    }
 }
 
 void VideoPlayer::DeleteTexture() {
@@ -162,9 +204,48 @@ void VideoPlayer::DeleteTexture() {
         glDeleteTextures(1, &textureID);
         textureID = 0;
     }
+    texWidth = 0;
+    texHeight = 0;
 }
 
-// Реализация методов оверлеев (без изменений)
+bool VideoPlayer::ExtractClip(const std::string& sourcePath,
+                              int startFrame, int endFrame,
+                              const std::string& outputPath,
+                              double fps) {
+    if (startFrame > endFrame || sourcePath.empty()) return false;
+
+    cv::VideoCapture src(sourcePath);
+    if (!src.isOpened()) {
+        std::cerr << "ExtractClip: cannot open " << sourcePath << std::endl;
+        return false;
+    }
+
+    src.set(cv::CAP_PROP_POS_FRAMES, startFrame);
+    cv::Mat frame;
+    src >> frame;
+    if (frame.empty()) return false;
+
+    if (fps <= 0) fps = src.get(cv::CAP_PROP_FPS);
+    if (fps <= 0) fps = 30.0;
+
+    int fourcc = cv::VideoWriter::fourcc('m', 'p', '4', 'v');
+    cv::VideoWriter writer(outputPath, fourcc, fps,
+                           cv::Size(frame.cols, frame.rows));
+    if (!writer.isOpened()) {
+        std::cerr << "ExtractClip: cannot write " << outputPath << std::endl;
+        return false;
+    }
+
+    writer.write(frame);
+    for (int i = startFrame + 1; i <= endFrame; ++i) {
+        src >> frame;
+        if (frame.empty()) break;
+        writer.write(frame);
+    }
+
+    return true;
+}
+
 void VideoPlayer::SetOverlayBoxes(const std::vector<cv::Rect>& boxes, const cv::Scalar& color) {
     overlayBoxes = boxes;
     boxColor = color;

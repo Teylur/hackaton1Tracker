@@ -35,6 +35,7 @@ private:
     bool m_initialized = false;
 
     VideoPlayer m_player;
+    VideoPlayer m_clipPlayer;
     AlertSystem m_alertSystem;
     YoloDetector m_detector;
 

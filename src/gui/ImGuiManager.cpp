@@ -14,6 +14,11 @@ namespace fs = std::filesystem;
 
 ImGuiManager::ImGuiManager(const std::string& video_path, const fs::path& model_path)
     : m_detector(model_path), m_videoPath(video_path) {
+    m_alertSystem.setOnAlertSelected([this](const Alert& alert) {
+        m_player.SeekFrame(alert.clipStartFrame);
+        m_currentFrameIndex = alert.clipStartFrame;
+        m_player.Pause();
+    });
     m_alertSystem.setOnAlertAccepted([this](int frameNumber) {
         m_player.SeekFrame(frameNumber);
         m_currentFrameIndex = frameNumber;
@@ -100,6 +105,7 @@ void ImGuiManager::run() {
     } else {
         m_totalFrames = m_player.GetTotalFrames();
         m_fps = m_player.GetFps();
+        m_alertSystem.setVideoSource(m_videoPath, m_fps, m_totalFrames);
         m_player.Play();
     }
 
@@ -122,6 +128,7 @@ void ImGuiManager::run() {
         ImGui::SetNextWindowPos(ImVec2(10, 340), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(280, 360), ImGuiCond_FirstUseEver);
         m_alertSystem.drawAlertPanel();
+        m_alertSystem.drawClipPopup(m_clipPlayer);
         renderTimeline();
 
         ImGui::Render();
@@ -240,6 +247,7 @@ void ImGuiManager::renderSidebar() {
         if (m_player.LoadVideo(m_videoPath)) {
             m_totalFrames = m_player.GetTotalFrames();
             m_fps = m_player.GetFps();
+            m_alertSystem.setVideoSource(m_videoPath, m_fps, m_totalFrames);
             m_currentFrameIndex = 0;
             m_trajectory.clear();
             m_player.Play();
