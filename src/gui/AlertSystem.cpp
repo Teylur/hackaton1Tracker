@@ -1,4 +1,5 @@
 #include "AlertSystem.h"
+#include "imgui.h"              // ← только здесь
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
@@ -14,21 +15,23 @@ void AlertSystem::addAlert(const cv::Mat& currentFrame, float confidence,
                            int frameNumber, double timestamp, cv::Rect bbox) {
     
     Alert newAlert(nextId++, timestamp, frameNumber, confidence, bbox);
-    
-    // Простая проверка на дубликаты (не добавляем слишком часто)
+
+    // Защита от спама (не чаще 1 раза в секунду)
     if (!alerts.empty() && (timestamp - alerts.back().timestamp < 1.0)) {
-        return; // пропускаем, если алерт был меньше секунды назад
+        return;
     }
 
     alerts.push_back(newAlert);
     
     std::cout << "🚨 ALERT #" << newAlert.id 
               << " | Frame: " << frameNumber 
+              << " | Time: " << std::fixed << std::setprecision(2) << timestamp << "s"
               << " | Conf: " << (int)(confidence * 100) << "%" << std::endl;
 }
 
 void AlertSystem::drawAlertPanel() {
-    ImGui::Begin("Алёрты (Потенциальные выезды)", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::Begin("🚨 Алёрты (Потенциальные выезды)", nullptr, 
+                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse);
 
     ImGui::Text("Всего алёртов: %d", (int)alerts.size());
     ImGui::Separator();
@@ -36,37 +39,39 @@ void AlertSystem::drawAlertPanel() {
     for (int i = 0; i < (int)alerts.size(); ++i) {
         auto& alert = alerts[i];
         
-        std::string label = "Alert #" + std::to_string(alert.id) +
-                           " | " + std::to_string(alert.timestamp).substr(0, 5) + "s" +
-                           " | Conf: " + std::to_string((int)(alert.confidence * 100)) + "%";
+        std::stringstream ss;
+        ss << "Alert #" << alert.id 
+           << " | " << std::fixed << std::setprecision(2) << alert.timestamp << "s"
+           << " | Conf: " << (int)(alert.confidence * 100) << "%";
 
         ImGui::PushID(i);
         
-        if (ImGui::Selectable(label.c_str(), selectedAlertIndex == i)) {
+        if (ImGui::Selectable(ss.str().c_str(), selectedAlertIndex == i)) {
             selectedAlertIndex = i;
-            // Здесь можно отправить сигнал в ImGuiManager для перемотки видео
+            // TODO: Сюда потом добавим сигнал на перемотку видео
         }
 
-        ImGui::SameLine();
+        ImGui::SameLine(0.0f, 15.0f);
 
         if (alert.status == "pending") {
-            if (ImGui::Button("✅")) {
+            if (ImGui::SmallButton("✅")) {
                 processAcceptReject(i, true);
             }
             ImGui::SameLine();
-            if (ImGui::Button("❌")) {
+            if (ImGui::SmallButton("❌")) {
                 processAcceptReject(i, false);
             }
         } else {
-            ImGui::TextColored(alert.status == "accepted" ? 
-                             ImVec4(0,1,0,1) : ImVec4(1,0,0,1), 
-                             "[%s]", alert.status.c_str());
+            ImVec4 color = (alert.status == "accepted") ? 
+                           ImVec4(0.0f, 1.0f, 0.0f, 1.0f) : ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
+            ImGui::TextColored(color, "[%s]", alert.status.c_str());
         }
 
         ImGui::PopID();
     }
 
-    if (ImGui::Button("Сохранить все принятые алерты")) {
+    ImGui::Separator();
+    if (ImGui::Button("💾 Сохранить все принятые алерты")) {
         saveAcceptedAlerts();
     }
 
@@ -88,17 +93,20 @@ std::vector<Alert> AlertSystem::getAllAlerts() const {
 }
 
 void AlertSystem::saveAcceptedAlerts(const std::string& baseFolder) {
+    int count = 0;
     for (const auto& alert : alerts) {
         if (alert.status == "accepted") {
-            // Здесь можно сохранить сниппет, если у тебя есть доступ к кадру
-            std::cout << "Сохранён алерт #" << alert.id << " для дообучения" << std::endl;
+            count++;
+            // saveAlertSnippet(...) — можно расширить позже
         }
     }
+    std::cout << "💾 Сохранено " << count << " алертов для дообучения.\n";
 }
 
 void AlertSystem::saveAlertSnippet(const Alert& alert, const cv::Mat& frame, 
                                   const std::string& baseFolder) {
-    // Пока заглушка — потом можно расширить
     std::string filename = baseFolder + "/alert_" + std::to_string(alert.id) + ".jpg";
-    cv::imwrite(filename, frame);
+    if (!frame.empty()) {
+        cv::imwrite(filename, frame);
+    }
 }
